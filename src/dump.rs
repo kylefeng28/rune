@@ -749,6 +749,7 @@ mod parser {
 
     fn object_line<'a>() -> P<'a, (ObjId, DumpedObject)> {
         let p_nil = kw(b"nil").map(|_| DumpedObject::Nil);
+
         let p_int = kw(b"int ") * (signed_digits())
             .convert(String::from_utf8)
             .convert(|s| s.parse::<i64>())
@@ -769,15 +770,20 @@ mod parser {
 
         let p_cons = kw(b"cons car=") * (obj_ref() - kw(b" cdr=") + obj_ref())
             .map(|(car, cdr)| DumpedObject::Cons { car, cdr });
+
         let p_vec = (kw(b"vec ") * ref_list()).map(DumpedObject::Vec);
         let p_subr = (kw(b"subr ") * quoted_string()).map(DumpedObject::Subr);
         let p_record = (kw(b"record ") * ref_list()).map(DumpedObject::Record);
+
+        let p_bigint = (kw(b"bigint ") * is_a(|b: u8| !b.is_ascii_whitespace()).repeat(1..))
+            .convert(String::from_utf8)
+            .map(DumpedObject::BigInt);
 
         obj_ref() - sp() + (
             p_nil | p_int | p_float | p_string | p_bytestring
             | p_symbol | p_cons | p_vec
             | p_bytefn() | p_subr
-            | p_record | p_bigint()
+            | p_record | p_bigint
             | p_opaque()
         )
     }
@@ -791,12 +797,6 @@ mod parser {
             .map(|(((args, depth), codes), consts)| {
                 DumpedObject::ByteFn { args, depth, codes, consts }
             })
-    }
-
-    fn p_bigint<'a>() -> P<'a, DumpedObject> {
-        (kw(b"bigint ") * is_a(|b: u8| !b.is_ascii_whitespace()).repeat(1..))
-            .convert(String::from_utf8)
-            .map(DumpedObject::BigInt)
     }
 
     fn p_opaque<'a>() -> P<'a, DumpedObject> {
