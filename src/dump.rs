@@ -27,8 +27,23 @@ enum DumpedObject {
     Nil,
     Int(i64),
     Float(f64),
+    String(std::string::String),
+    ByteString(Vec<u8>),
+    Symbol { name: std::string::String, interned: bool },
     Cons { car: ObjId, cdr: ObjId },
-    Unimplemented,
+    Vec(Vec<ObjId>),
+    ByteFn { args: u64, depth: usize, codes: Vec<u8>, consts: Vec<ObjId> },
+    /// SubrFn contains a Rust fn pointer which can't be serialized.
+    /// We store only the name during serialization; the loader will
+    /// recover the function pointer by name lookup.
+    Subr(std::string::String),
+    Record(Vec<ObjId>),
+    HashTable,
+    Buffer,
+    CharTable,
+    BigInt(std::string::String),
+    ChannelSender,
+    ChannelReceiver,
 }
 
 /// An entry in the symbol table section: name -> (symbol object id, optional function object id)
@@ -58,10 +73,56 @@ impl Display for DumpedObject {
             Self::Nil => write!(f, "nil"),
             Self::Int(x) => write!(f, "int {x}"),
             Self::Float(x) => write!(f, "float {x}"),
+            Self::String(s) => write!(f, "string \"{}\"", escape_str(s)),
+            Self::ByteString(bytes) => {
+                write!(f, "bytestring #")?;
+                for b in bytes {
+                    write!(f, "{b:02x}")?;
+                }
+                Ok(())
+            }
+            Self::Symbol { name, interned } => {
+                write!(f, "symbol \"{}\" interned={interned}", escape_str(name))
+            }
             Self::Cons { car, cdr } => write!(f, "cons car=@{car} cdr=@{cdr}"),
-            Self::Unimplemented  => write!(f, "unimplemented"),
+            Self::Vec(elems) => {
+                write!(f, "vec [")?;
+                fmt_id_list(f, elems)?;
+                write!(f, "]")
+            }
+            Self::ByteFn { args, depth, codes, consts } => {
+                write!(f, "bytefn args={args} depth={depth} codes=#")?;
+                for b in codes {
+                    write!(f, "{b:02x}")?;
+                }
+                write!(f, " consts=[")?;
+                fmt_id_list(f, consts)?;
+                write!(f, "]")
+            }
+            Self::Subr(name) => write!(f, "subr \"{}\"", escape_str(name)),
+            Self::Record(elems) => {
+                write!(f, "record [")?;
+                fmt_id_list(f, elems)?;
+                write!(f, "]")
+            }
+            Self::HashTable => write!(f, "hashtable <opaque>"),
+            Self::Buffer => write!(f, "buffer <opaque>"),
+            Self::CharTable => write!(f, "chartable <opaque>"),
+            Self::BigInt(s) => write!(f, "bigint {s}"),
+            Self::ChannelSender => write!(f, "channel-sender <opaque>"),
+            Self::ChannelReceiver => write!(f, "channel-receiver <opaque>"),
         }
     }
+}
+
+fn fmt_id_list(f: &mut fmt::Formatter<'_>, ids: &[ObjId]) -> fmt::Result {
+    for (i, id) in ids.iter().enumerate() {
+        if i > 0 {
+            write!(f, " ")?;
+        }
+        write!(f, "@{id}")?;
+    }
+    Ok(())
 }
 
 impl DumpState {
@@ -101,14 +162,44 @@ impl DumpState {
 
         let dumped = match obj.untag() {
             ObjectType::Int(x) => DumpedObject::Int(x),
+            ObjectType::Float(x) => DumpedObject::Float(**x),
+            ObjectType::String(s) => DumpedObject::String(s.inner().to_owned()),
+            ObjectType::ByteString(s) => DumpedObject::ByteString(s.to_vec()),
+            ObjectType::Symbol(sym) => DumpedObject::Symbol {
+                name: sym.name().to_owned(),
+                interned: sym.interned(),
+            },
             ObjectType::Cons(cons) => {
                 let car = self.dump_object(cons.car());
                 let cdr = self.dump_object(cons.cdr());
                 DumpedObject::Cons { car, cdr }
             }
-            _ => {
-                DumpedObject::Nil
+            ObjectType::Vec(vec) => {
+                let elems = vec.iter().map(|cell| self.dump_object(cell.get())).collect();
+                DumpedObject::Vec(elems)
             }
+            ObjectType::ByteFn(bf) => {
+                // Bytecode is trivially serializable; the constants
+                // vector contains arbitrary Objects so we recurse into each.
+                let consts = bf.consts().iter().map(|c| self.dump_object(*c)).collect();
+                DumpedObject::ByteFn {
+                    args: bf.args.into_arg_spec(),
+                    depth: bf.depth,
+                    codes: bf.codes().to_vec(),
+                    consts,
+                }
+            }
+            ObjectType::SubrFn(subr) => DumpedObject::Subr(subr.name.to_owned()),
+            ObjectType::HashTable(_) => DumpedObject::HashTable,
+            ObjectType::Record(rec) => {
+                let elems = rec.iter().map(|cell| self.dump_object(cell.get())).collect();
+                DumpedObject::Record(elems)
+            }
+            ObjectType::Buffer(_) => DumpedObject::Buffer,
+            ObjectType::CharTable(_) => DumpedObject::CharTable,
+            ObjectType::BigInt(n) => DumpedObject::BigInt(n.to_string()),
+            ObjectType::ChannelSender(_) => DumpedObject::ChannelSender,
+            ObjectType::ChannelReceiver(_) => DumpedObject::ChannelReceiver,
         };
 
         // Overwrite the Nil placeholder with the real object
