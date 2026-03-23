@@ -8,6 +8,8 @@
 //! have any compatibility with unexec or pdump.
 //! https://lwn.net/Articles/707619/
 //! https://github.com/emacs-mirror/emacs/blob/master/src/pdumper.h
+mod parser;
+
 use crate::core::{
     env::{Env, INTERNED_SYMBOLS},
     gc::{Context, Rt},
@@ -22,6 +24,7 @@ type ObjId = u32;
 
 /// A serialized representation of a single GC object, decoupled from live
 /// pointers. Children are referenced by ObjId rather than raw addresses.
+#[derive(Debug, PartialEq)]
 enum DumpedObject {
     Nil,
     Int(i64),
@@ -57,6 +60,7 @@ enum DumpedObject {
 }
 
 /// An entry in the symbol table section: name -> (symbol object id, optional function object id)
+#[derive(Debug, PartialEq)]
 struct DumpedSymbol {
     name: std::string::String,
     sym_id: ObjId,
@@ -64,11 +68,13 @@ struct DumpedSymbol {
 }
 
 /// An entry in the env section: a variable binding from symbol to value.
+#[derive(Debug, PartialEq)]
 struct DumpedBinding {
     sym_id: ObjId,
     val_id: ObjId,
 }
 
+#[derive(Debug, PartialEq)]
 struct DumpState {
     /// Maps live pointer address -> assigned object id (handles cycles + dedup)
     seen: HashMap<usize, ObjId>,
@@ -385,8 +391,12 @@ fn parse_dump(input: &str) -> Result<DumpFile, String> {
     Ok(DumpFile { objects, symbols, env })
 }
 
-/// Parse `@{id} {type} {fields...}` into (ObjId, DumpedObject).
 fn parse_object_line(line: &str) -> Result<(ObjId, DumpedObject), String> {
+    parser::parse_object_line_pom(line)
+}
+
+/// Parse `@{id} {type} {fields...}` into (ObjId, DumpedObject).
+fn parse_object_line_old(line: &str) -> Result<(ObjId, DumpedObject), String> {
     let line = line.strip_prefix('@').ok_or("expected @")?;
     let (id_str, rest) = line.split_once(' ').ok_or("expected space after id")?;
     let id: ObjId = id_str.parse().map_err(|e| format!("bad id: {e}"))?;
