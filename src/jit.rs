@@ -21,59 +21,399 @@ use crate::bytecode::opcode::OpCode;
 pub type JitFn = unsafe fn(*mut u8, *mut u8, *const u8) -> u64;
 
 // ── Helper functions called from JIT code ───────────────────────────────
-// Each is extern "C" so Cranelift can call them directly.
+// A single dispatch helper handles all opcodes. The JIT emits a call to
+// jit_exec_op(env, cx, consts, opcode, arg) for each instruction.
+// Returns: 0 = ok (continue), 1 = return (value in top-of-stack),
+//          2 = error.
 
 #[unsafe(no_mangle)]
-pub extern "C" fn jit_constant(env: *mut u8, _cx: *mut u8, consts: *const u8, idx: u64) -> u64 {
+pub extern "C" fn jit_exec_op(
+    env: *mut u8,
+    cx: *mut u8,
+    consts: *const u8,
+    opcode: u64,
+    arg: u64,
+) -> u64 {
+    use crate::bytecode::opcode::OpCode as op;
+    use crate::core::object::{ObjectType, NIL};
+    use crate::{alloc, arith, data, fns};
+
     unsafe {
         let env = &mut *(env as *mut crate::core::gc::Rt<crate::core::env::Env>);
-        let obj = *(consts as *const crate::core::object::Object).add(idx as usize);
-        env.stack.push(obj);
+        let cx = &mut *(cx as *mut crate::core::gc::Context);
+
+        let opcode: op = match (opcode as u8).try_into() {
+            Ok(o) => o,
+            Err(_) => return 2,
+        };
+
+        let result: Result<(), anyhow::Error> = (|| {
+            match opcode {
+                // ── Stack ───────────────────────────────────
+                op::StackRef0 | op::StackRef1 | op::StackRef2
+                | op::StackRef3 | op::StackRef4 | op::StackRef5 => {
+                    env.stack.push_ref(arg as u16, cx);
+                }
+                op::StackRefN | op::StackRefN2 => {
+                    env.stack.push_ref(arg as u16, cx);
+                }
+                op::StackSetN | op::StackSetN2 => {
+                    env.stack.set_ref(arg as u16);
+                }
+                op::Discard => { env.stack.pop(cx); }
+                op::Duplicate => {
+                    let top = env.stack[0].bind(cx);
+                    env.stack.push(top);
+                }
+                op::DiscardN => {
+                    let keep_tos = (arg & 0x80) != 0;
+                    let count = (arg & 0x7F) as usize;
+                    let cur_len = env.stack.len();
+                    if keep_tos {
+                        let top = env.stack.top().bind(cx);
+                        env.stack.truncate(cur_len - count);
+                        env.stack.top().set(top);
+                    } else {
+                        env.stack.truncate(cur_len - count);
+                    }
+                }
+
+                // ── Constants ───────────────────────────────
+                op::Constant0 | op::Constant1 | op::Constant2
+                | op::Constant3 | op::Constant4 | op::Constant5
+                | op::Constant6 | op::Constant7 | op::Constant8
+                | op::Constant9 | op::Constant10 | op::Constant11
+                | op::Constant12 | op::Constant13 | op::Constant14
+                | op::Constant15 | op::Constant16 | op::Constant17
+                | op::Constant18 | op::Constant19 | op::Constant20
+                | op::Constant21 | op::Constant22 | op::Constant23
+                | op::Constant24 | op::Constant25 | op::Constant26
+                | op::Constant27 | op::Constant28 | op::Constant29
+                | op::Constant30 | op::Constant31 | op::Constant32
+                | op::Constant33 | op::Constant34 | op::Constant35
+                | op::Constant36 | op::Constant37 | op::Constant38
+                | op::Constant39 | op::Constant40 | op::Constant41
+                | op::Constant42 | op::Constant43 | op::Constant44
+                | op::Constant44 | op::Constant45 | op::Constant46
+                | op::Constant47 | op::Constant48 | op::Constant49
+                | op::Constant50 | op::Constant51 | op::Constant52
+                | op::Constant53 | op::Constant54 | op::Constant55
+                | op::Constant56 | op::Constant57 | op::Constant58
+                | op::Constant59 | op::Constant60 | op::Constant61
+                | op::Constant62 | op::Constant63
+                | op::ConstantN2 => {
+                    let obj = *(consts as *const crate::core::object::Object).add(arg as usize);
+                    env.stack.push(obj);
+                }
+
+                // ── VarRef ──────────────────────────────────
+                op::VarRef0 | op::VarRef1 | op::VarRef2
+                | op::VarRef3 | op::VarRef4 | op::VarRef5
+                | op::VarRefN | op::VarRefN2 => {
+                    let sym_obj = *(consts as *const crate::core::object::Object).add(arg as usize);
+                    if let ObjectType::Symbol(sym) = sym_obj.untag() {
+                        let var = env.vars.get(sym)
+                            .ok_or_else(|| anyhow::anyhow!("Void Variable: {sym}"))?;
+                        let var = var.bind(cx);
+                        env.stack.push(var);
+                    } else {
+                        anyhow::bail!("Varref was not a symbol");
+                    }
+                }
+
+                // ── VarSet ──────────────────────────────────
+                op::VarSet0 | op::VarSet1 | op::VarSet2
+                | op::VarSet3 | op::VarSet4 | op::VarSet5
+                | op::VarSetN | op::VarSetN2 => {
+                    let sym_obj = *(consts as *const crate::core::object::Object).add(arg as usize);
+                    let symbol: crate::core::object::Symbol = sym_obj.try_into()?;
+                    let value = env.stack.pop(cx);
+                    data::set(symbol, value, env)?;
+                }
+
+                // ── VarBind ─────────────────────────────────
+                op::VarBind0 | op::VarBind1 | op::VarBind2
+                | op::VarBind3 | op::VarBind4 | op::VarBind5
+                | op::VarBindN | op::VarBindN2 => {
+                    let value = env.stack.pop(cx);
+                    let sym_obj = *(consts as *const crate::core::object::Object).add(arg as usize);
+                    let ObjectType::Symbol(sym) = sym_obj.untag() else {
+                        anyhow::bail!("Varbind was not a symbol");
+                    };
+                    env.varbind(sym, value, cx);
+                }
+
+                // ── Unbind ──────────────────────────────────
+                op::Unbind0 | op::Unbind1 | op::Unbind2
+                | op::Unbind3 | op::Unbind4 | op::Unbind5
+                | op::UnbindN | op::UnbindN2 => {
+                    env.unbind(arg as u16, cx);
+                }
+
+                // ── Call ────────────────────────────────────
+                op::Call0 | op::Call1 | op::Call2
+                | op::Call3 | op::Call4 | op::Call5
+                | op::CallN | op::CallN2 => {
+                    let arg_cnt = arg as usize;
+                    let func: crate::core::object::Function = env.stack[arg_cnt].bind(cx).try_into()?;
+                    let mut frame = crate::core::env::stack::CallFrame::new_with_args(env, arg_cnt);
+                    root!(func, cx);
+                    let result = func.call(&mut frame, None, cx)?;
+                    drop(frame);
+                    env.stack.top().set(result);
+                    cx.garbage_collect(false);
+                }
+
+                // ── Type predicates ─────────────────────────
+                op::Symbolp => { let t = env.stack.top(); t.set(data::symbolp(t.bind(cx))); }
+                op::Consp => { let t = env.stack.top(); t.set(data::consp(t.bind(cx))); }
+                op::Stringp => { let t = env.stack.top(); t.set(data::stringp(t.bind(cx))); }
+                op::Listp => { let t = env.stack.top(); t.set(data::listp(t.bind(cx))); }
+                op::Numberp => { let t = env.stack.top(); t.set(data::numberp(t.bind(cx))); }
+                op::Integerp => { let t = env.stack.top(); t.set(data::integerp(t.bind(cx))); }
+                op::Not => { let t = env.stack.top(); t.set(data::null(t.bind(cx))); }
+
+                // ── Cons ops ────────────────────────────────
+                op::Car => { let t = env.stack.top(); t.set(data::car(t.bind_as(cx)?)); }
+                op::Cdr => { let t = env.stack.top(); t.set(data::cdr(t.bind_as(cx)?)); }
+                op::CarSafe => { let t = env.stack.top(); t.set(data::car_safe(t.bind(cx))); }
+                op::CdrSafe => { let t = env.stack.top(); t.set(data::cdr_safe(t.bind(cx))); }
+                op::Cons => {
+                    let cdr = env.stack.pop(cx);
+                    let car = env.stack.top();
+                    car.set(data::cons(car.bind(cx), cdr, cx));
+                }
+                op::Setcar => {
+                    let newcar = env.stack.pop(cx);
+                    let t = env.stack.top();
+                    t.set(data::setcar(t.bind_as(cx)?, newcar)?);
+                }
+                op::Setcdr => {
+                    let newcdr = env.stack.pop(cx);
+                    let t = env.stack.top();
+                    t.set(data::setcdr(t.bind_as(cx)?, newcdr)?);
+                }
+
+                // ── List ops ────────────────────────────────
+                op::List1 => { let t = env.stack.top(); t.set(alloc::list(&[t.bind(cx)], cx)); }
+                op::List2 => {
+                    let a2 = env.stack.pop(cx);
+                    let t = env.stack.top();
+                    t.set(alloc::list(&[t.bind(cx), a2], cx));
+                }
+                op::List3 => {
+                    let a3 = env.stack.pop(cx);
+                    let a2 = env.stack.pop(cx);
+                    let t = env.stack.top();
+                    t.set(alloc::list(&[t.bind(cx), a2, a3], cx));
+                }
+                op::List4 => {
+                    let a4 = env.stack.pop(cx);
+                    let a3 = env.stack.pop(cx);
+                    let a2 = env.stack.pop(cx);
+                    let t = env.stack.top();
+                    t.set(alloc::list(&[t.bind(cx), a2, a3, a4], cx));
+                }
+                op::ListN => {
+                    let size = arg as usize;
+                    let slice = crate::core::gc::Rt::bind_slice(&env.stack[..size], cx);
+                    let list = alloc::list(slice, cx);
+                    let len = env.stack.len();
+                    env.stack.truncate(len - (size - 1));
+                    env.stack.top().set(list);
+                }
+                op::Nconc => {
+                    let list2 = env.stack.pop(cx);
+                    let t = env.stack.top();
+                    t.set(fns::nconc(&[t.bind_as(cx)?, list2.try_into()?])?);
+                }
+                op::Nreverse => {
+                    let t = env.stack.top();
+                    t.set(fns::nreverse(t.bind_as(cx)?)?);
+                }
+
+                // ── Sequence ops ────────────────────────────
+                op::Length => {
+                    let t = env.stack.top();
+                    t.set(fns::length(t.bind(cx))? as i64);
+                }
+                op::Nth => {
+                    let list = env.stack.pop(cx);
+                    let t = env.stack.top();
+                    t.set(fns::nth(t.bind_as(cx)?, list.try_into()?)?);
+                }
+                op::Nthcdr => {
+                    let list = env.stack.pop(cx);
+                    let t = env.stack.top();
+                    t.set(fns::nthcdr(t.bind_as(cx)?, list.try_into()?)?.as_obj_copy());
+                }
+                op::Elt => {
+                    let n = env.stack.pop(cx);
+                    let t = env.stack.top();
+                    t.set(fns::elt(t.bind(cx), n.try_into()?, cx)?);
+                }
+                op::Aref => {
+                    let idx = env.stack.pop(cx);
+                    let t = env.stack.top();
+                    t.set(data::aref(t.bind(cx), idx.try_into()?, cx)?);
+                }
+                op::Aset => {
+                    let newlet = env.stack.pop(cx);
+                    let idx = env.stack.pop(cx);
+                    let t = env.stack.top();
+                    t.set(data::aset(t.bind(cx), idx.try_into()?, newlet)?);
+                }
+                op::Member => {
+                    let list = env.stack.pop(cx);
+                    let t = env.stack.top();
+                    t.set(fns::member(t.bind(cx), list.try_into()?)?);
+                }
+                op::Assq => {
+                    let alist = env.stack.pop(cx);
+                    let t = env.stack.top();
+                    t.set(fns::assq(t.bind(cx), alist.try_into()?)?);
+                }
+                op::Memq => {
+                    let list = env.stack.pop(cx);
+                    let t = env.stack.top();
+                    t.set(fns::memq(t.bind(cx), list.try_into()?)?);
+                }
+                op::Eq => {
+                    let v1 = env.stack.pop(cx);
+                    let t = env.stack.top();
+                    t.set(fns::eq(t.bind(cx), v1));
+                }
+                op::Equal => {
+                    let rhs = env.stack.pop(cx);
+                    let t = env.stack.top();
+                    t.set(fns::equal(t.bind(cx), rhs));
+                }
+
+                // ── Symbol ops ──────────────────────────────
+                op::SymbolValue => {
+                    let top = env.stack.top().bind_as(cx)?;
+                    let value = data::symbol_value(top, env, cx).unwrap_or_default();
+                    env.stack.top().set(value);
+                }
+                op::SymbolFunction => {
+                    let t = env.stack.top();
+                    t.set(data::symbol_function(t.bind_as(cx)?, cx));
+                }
+                op::Set => {
+                    let newlet = env.stack.pop(cx);
+                    let top = env.stack.top().bind_as(cx)?;
+                    let value = data::set(top, newlet, env)?;
+                    env.stack.top().set(value);
+                }
+                op::Fset => {
+                    let def = env.stack.pop(cx);
+                    let t = env.stack.top();
+                    t.set::<crate::core::object::Object>(data::fset(t.bind_as(cx)?, def)?.into());
+                }
+                op::Get => {
+                    let prop = env.stack.pop(cx).try_into()?;
+                    let top = env.stack.top().bind_as(cx)?;
+                    let value = data::get(top, prop, env, cx);
+                    env.stack.top().set(value);
+                }
+
+                // ── Arithmetic ──────────────────────────────
+                op::Add1 => {
+                    let t = env.stack.top();
+                    t.set(cx.add(arith::add_one(t.bind_as(cx)?)));
+                }
+                op::Sub1 => {
+                    let t = env.stack.top();
+                    t.set(cx.add(arith::sub_one(t.bind_as(cx)?)));
+                }
+                op::Plus => {
+                    let a1 = env.stack.pop(cx);
+                    let t = env.stack.top();
+                    let args = &[t.bind_as(cx)?, a1.try_into()?];
+                    t.set(cx.add(arith::add(args)));
+                }
+                op::Multiply => {
+                    let a1 = env.stack.pop(cx);
+                    let t = env.stack.top();
+                    let args = &[t.bind_as(cx)?, a1.try_into()?];
+                    t.set(cx.add(arith::mul(args)));
+                }
+                op::Negate => {
+                    let t = env.stack.top();
+                    t.set(cx.add(arith::sub(t.bind_as(cx)?, &[])));
+                }
+                op::Max => {
+                    let a1 = env.stack.pop(cx);
+                    let t = env.stack.top();
+                    t.set(cx.add(arith::max(t.bind_as(cx)?, &[a1.try_into()?])));
+                }
+                op::Min => {
+                    let a1 = env.stack.pop(cx);
+                    let t = env.stack.top();
+                    t.set(cx.add(arith::min(t.bind_as(cx)?, &[a1.try_into()?])));
+                }
+
+                // ── Comparisons ─────────────────────────────
+                op::EqlSign => {
+                    let rhs = env.stack.pop(cx);
+                    let t = env.stack.top();
+                    t.set::<crate::core::object::Object>(arith::num_eq(t.bind_as(cx)?, &[rhs.try_into()?]).into());
+                }
+                op::GreaterThan => {
+                    let v1 = env.stack.pop(cx);
+                    let t = env.stack.top();
+                    t.set(arith::greater_than(t.bind_as(cx)?, &[v1.try_into()?]));
+                }
+                op::LessThan => {
+                    let v1 = env.stack.pop(cx);
+                    let t = env.stack.top();
+                    t.set(arith::less_than(t.bind_as(cx)?, &[v1.try_into()?]));
+                }
+                op::LessThanOrEqual => {
+                    let v1 = env.stack.pop(cx);
+                    let t = env.stack.top();
+                    t.set(arith::less_than_or_eq(t.bind_as(cx)?, &[v1.try_into()?]));
+                }
+                op::GreaterThanOrEqual => {
+                    let v1 = &[env.stack.pop(cx).try_into()?];
+                    let t = env.stack.top();
+                    t.set(arith::greater_than_or_eq(t.bind_as(cx)?, v1));
+                }
+
+                // ── Condition/handler ───────────────────────
+                op::PopHandler | op::PushCondtionCase | op::PushCatch
+                | op::SaveExcursion | op::SaveRestriction | op::UnwindProtect
+                | op::Switch => {
+                    // These require VM-level state (handler stack, etc.)
+                    // that the tier-1 JIT doesn't model. Bail.
+                    return Err(anyhow::anyhow!("unsupported VM opcode: {opcode:?}"));
+                }
+
+                // ── Branches/Return handled by Cranelift directly ──
+                op::Goto | op::GotoIfNil | op::GotoIfNonNil
+                | op::GotoIfNilElsePop | op::GotoIfNonNilElsePop
+                | op::Return => {
+                    // Should never reach here — these are emitted as
+                    // Cranelift control flow, not helper calls.
+                    unreachable!("branch/return should not be dispatched to helper");
+                }
+
+                // ── Remaining ops: todo stubs ───────────────
+                _ => {
+                    return Err(anyhow::anyhow!("unimplemented opcode: {opcode:?}"));
+                }
+            }
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => 0,  // continue
+            Err(_) => 2,  // error
+        }
     }
-    0
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn jit_stack_ref(env: *mut u8, cx: *mut u8, idx: u64) -> u64 {
-    unsafe {
-        let env = &mut *(env as *mut crate::core::gc::Rt<crate::core::env::Env>);
-        let cx = &*(cx as *const crate::core::gc::Context);
-        env.stack.push_ref(idx as u16, cx);
-    }
-    0
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn jit_stack_set(env: *mut u8, _cx: *mut u8, idx: u64) -> u64 {
-    unsafe {
-        let env = &mut *(env as *mut crate::core::gc::Rt<crate::core::env::Env>);
-        env.stack.set_ref(idx as u16);
-    }
-    0
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn jit_discard(env: *mut u8, cx: *mut u8) -> u64 {
-    unsafe {
-        let env = &mut *(env as *mut crate::core::gc::Rt<crate::core::env::Env>);
-        let cx = &*(cx as *const crate::core::gc::Context);
-        env.stack.pop(cx);
-    }
-    0
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn jit_duplicate(env: *mut u8, cx: *mut u8) -> u64 {
-    unsafe {
-        let env = &mut *(env as *mut crate::core::gc::Rt<crate::core::env::Env>);
-        let cx = &*(cx as *const crate::core::gc::Context);
-        let top = env.stack[0].bind(cx);
-        env.stack.push(top);
-    }
-    0
-}
-
-/// Pop top of stack and return its raw bits.
+/// Pop top of stack and return its raw bits (for Return opcode).
 #[unsafe(no_mangle)]
 pub extern "C" fn jit_pop_return(env: *mut u8, cx: *mut u8) -> u64 {
     unsafe {
@@ -84,7 +424,7 @@ pub extern "C" fn jit_pop_return(env: *mut u8, cx: *mut u8) -> u64 {
     }
 }
 
-/// Pop top of stack, return its raw bits (for branch testing), then push it back.
+/// Pop and return raw bits (for branch condition testing).
 #[unsafe(no_mangle)]
 pub extern "C" fn jit_peek_pop(env: *mut u8, cx: *mut u8) -> u64 {
     unsafe {
@@ -92,6 +432,17 @@ pub extern "C" fn jit_peek_pop(env: *mut u8, cx: *mut u8) -> u64 {
         let cx = &*(cx as *const crate::core::gc::Context);
         let top = env.stack.pop(cx);
         std::mem::transmute(top)
+    }
+}
+
+/// For GotoIfNilElsePop: peek top, return raw bits. Don't pop.
+#[unsafe(no_mangle)]
+pub extern "C" fn jit_peek_top(env: *mut u8, cx: *mut u8) -> u64 {
+    unsafe {
+        let env = &mut *(env as *mut crate::core::gc::Rt<crate::core::env::Env>);
+        let cx = &*(cx as *const crate::core::gc::Context);
+        let top = env.stack[0].bind(cx);
+        std::mem::transmute::<crate::core::object::Object, u64>(top)
     }
 }
 
@@ -171,15 +522,10 @@ pub fn compile(codes: &[u8]) -> Option<JitFn> {
         .unwrap();
 
     let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
-
-    // Register our helper symbols so Cranelift can resolve them
-    builder.symbol("jit_constant", jit_constant as *const u8);
-    builder.symbol("jit_stack_ref", jit_stack_ref as *const u8);
-    builder.symbol("jit_stack_set", jit_stack_set as *const u8);
-    builder.symbol("jit_discard", jit_discard as *const u8);
-    builder.symbol("jit_duplicate", jit_duplicate as *const u8);
+    builder.symbol("jit_exec_op", jit_exec_op as *const u8);
     builder.symbol("jit_pop_return", jit_pop_return as *const u8);
     builder.symbol("jit_peek_pop", jit_peek_pop as *const u8);
+    builder.symbol("jit_peek_top", jit_peek_top as *const u8);
 
     let mut module = JITModule::new(builder);
     let ptr_ty = module.target_config().pointer_type();
@@ -191,14 +537,32 @@ pub fn compile(codes: &[u8]) -> Option<JitFn> {
     ctx.func.signature.params.push(AbiParam::new(ptr_ty));
     ctx.func.signature.returns.push(AbiParam::new(types::I64));
 
-    // Declare imported helper functions
-    let helpers = declare_helpers(&mut module, ptr_ty);
+    // Declare helper signatures
+    // jit_exec_op(env, cx, consts, opcode, arg) -> i64
+    let mut sig_exec = module.make_signature();
+    sig_exec.params.extend_from_slice(&[
+        AbiParam::new(ptr_ty), AbiParam::new(ptr_ty), AbiParam::new(ptr_ty),
+        AbiParam::new(types::I64), AbiParam::new(types::I64),
+    ]);
+    sig_exec.returns.push(AbiParam::new(types::I64));
+
+    // jit_pop_return/jit_peek_pop/jit_peek_top(env, cx) -> i64
+    let mut sig2 = module.make_signature();
+    sig2.params.extend_from_slice(&[AbiParam::new(ptr_ty), AbiParam::new(ptr_ty)]);
+    sig2.returns.push(AbiParam::new(types::I64));
+
+    let fn_exec = module.declare_function("jit_exec_op", Linkage::Import, &sig_exec).unwrap();
+    let fn_ret = module.declare_function("jit_pop_return", Linkage::Import, &sig2).unwrap();
+    let fn_pop = module.declare_function("jit_peek_pop", Linkage::Import, &sig2).unwrap();
+    let fn_peek = module.declare_function("jit_peek_top", Linkage::Import, &sig2).unwrap();
 
     let mut fb_ctx = FunctionBuilderContext::new();
     let mut b = FunctionBuilder::new(&mut ctx.func, &mut fb_ctx);
 
-    // Import helper FuncIds into this function
-    let h = helpers.import_into(&mut module, &mut b);
+    let fr_exec = module.declare_func_in_func(fn_exec, b.func);
+    let fr_ret = module.declare_func_in_func(fn_ret, b.func);
+    let fr_pop = module.declare_func_in_func(fn_pop, b.func);
+    let fr_peek = module.declare_func_in_func(fn_peek, b.func);
 
     let entry = b.create_block();
     b.append_block_params_for_function_params(entry);
@@ -208,7 +572,6 @@ pub fn compile(codes: &[u8]) -> Option<JitFn> {
     let cx_v = b.block_params(entry)[1];
     let consts = b.block_params(entry)[2];
 
-    // Pre-scan for branch targets
     let block_map = scan_branch_targets(codes, &mut b);
 
     let mut pc = 0usize;
@@ -216,7 +579,6 @@ pub fn compile(codes: &[u8]) -> Option<JitFn> {
     let mut block_filled = false;
 
     while pc < codes.len() {
-        // Switch to target block if this PC is a branch destination
         if let Some(&blk) = block_map.get(&pc) {
             if blk != current {
                 if !block_filled {
@@ -228,14 +590,16 @@ pub fn compile(codes: &[u8]) -> Option<JitFn> {
             }
         }
 
-        let op: OpCode = match codes[pc].try_into() {
+        let op_byte = codes[pc];
+        let op: OpCode = match op_byte.try_into() {
             Ok(op) => op,
-            Err(_) => { return None; }
+            Err(_) => return None,
         };
         pc += 1;
 
-        match op {
-            // ── Constants ───────────────────────────────────
+        // Compute the immediate arg for this opcode
+        let arg: u64 = match op {
+            // Opcodes with inline index in the opcode byte
             OpCode::Constant0 | OpCode::Constant1 | OpCode::Constant2
             | OpCode::Constant3 | OpCode::Constant4 | OpCode::Constant5
             | OpCode::Constant6 | OpCode::Constant7 | OpCode::Constant8
@@ -257,74 +621,80 @@ pub fn compile(codes: &[u8]) -> Option<JitFn> {
             | OpCode::Constant54 | OpCode::Constant55 | OpCode::Constant56
             | OpCode::Constant57 | OpCode::Constant58 | OpCode::Constant59
             | OpCode::Constant60 | OpCode::Constant61 | OpCode::Constant62
-            | OpCode::Constant63 => {
-                let idx = (op as u8) - (OpCode::Constant0 as u8);
-                let idx_v = b.ins().iconst(types::I64, idx as i64);
-                b.ins().call(h.constant, &[env, cx_v, consts, idx_v]);
-            }
-            OpCode::ConstantN2 => {
-                let idx = read_u16(codes, &mut pc);
-                let idx_v = b.ins().iconst(types::I64, idx as i64);
-                b.ins().call(h.constant, &[env, cx_v, consts, idx_v]);
-            }
+            | OpCode::Constant63 => (op_byte - OpCode::Constant0 as u8) as u64,
 
-            // ── Stack ops ───────────────────────────────────
             OpCode::StackRef0 | OpCode::StackRef1 | OpCode::StackRef2
-            | OpCode::StackRef3 | OpCode::StackRef4 | OpCode::StackRef5 => {
-                let idx = (op as u8) - (OpCode::StackRef0 as u8);
-                let v = b.ins().iconst(types::I64, idx as i64);
-                b.ins().call(h.stack_ref, &[env, cx_v, v]);
-            }
-            OpCode::StackRefN => {
-                let idx = read_u8(codes, &mut pc);
-                let v = b.ins().iconst(types::I64, idx as i64);
-                b.ins().call(h.stack_ref, &[env, cx_v, v]);
-            }
-            OpCode::StackRefN2 => {
-                let idx = read_u16(codes, &mut pc);
-                let v = b.ins().iconst(types::I64, idx as i64);
-                b.ins().call(h.stack_ref, &[env, cx_v, v]);
-            }
-            OpCode::StackSetN => {
-                let idx = read_u8(codes, &mut pc);
-                let v = b.ins().iconst(types::I64, idx as i64);
-                b.ins().call(h.stack_set, &[env, cx_v, v]);
-            }
-            OpCode::StackSetN2 => {
-                let idx = read_u16(codes, &mut pc);
-                let v = b.ins().iconst(types::I64, idx as i64);
-                b.ins().call(h.stack_set, &[env, cx_v, v]);
-            }
-            OpCode::Discard => {
-                b.ins().call(h.discard, &[env, cx_v]);
-            }
-            OpCode::Duplicate => {
-                b.ins().call(h.duplicate, &[env, cx_v]);
+            | OpCode::StackRef3 | OpCode::StackRef4 | OpCode::StackRef5 =>
+                (op_byte - OpCode::StackRef0 as u8) as u64,
+
+            OpCode::VarRef0 | OpCode::VarRef1 | OpCode::VarRef2
+            | OpCode::VarRef3 | OpCode::VarRef4 | OpCode::VarRef5 =>
+                (op_byte - OpCode::VarRef0 as u8) as u64,
+
+            OpCode::VarSet0 | OpCode::VarSet1 | OpCode::VarSet2
+            | OpCode::VarSet3 | OpCode::VarSet4 | OpCode::VarSet5 =>
+                (op_byte - OpCode::VarSet0 as u8) as u64,
+
+            OpCode::VarBind0 | OpCode::VarBind1 | OpCode::VarBind2
+            | OpCode::VarBind3 | OpCode::VarBind4 | OpCode::VarBind5 =>
+                (op_byte - OpCode::VarBind0 as u8) as u64,
+
+            OpCode::Call0 | OpCode::Call1 | OpCode::Call2
+            | OpCode::Call3 | OpCode::Call4 | OpCode::Call5 =>
+                (op_byte - OpCode::Call0 as u8) as u64,
+
+            OpCode::Unbind0 | OpCode::Unbind1 | OpCode::Unbind2
+            | OpCode::Unbind3 | OpCode::Unbind4 | OpCode::Unbind5 =>
+                (op_byte - OpCode::Unbind0 as u8) as u64,
+
+            // 1-byte arg opcodes
+            OpCode::StackRefN | OpCode::StackSetN | OpCode::VarRefN
+            | OpCode::VarSetN | OpCode::VarBindN | OpCode::CallN
+            | OpCode::UnbindN | OpCode::DiscardN | OpCode::ListN => {
+                read_u8(codes, &mut pc) as u64
             }
 
-            // ── Return ──────────────────────────────────────
+            // 2-byte arg opcodes
+            OpCode::StackRefN2 | OpCode::StackSetN2 | OpCode::VarRefN2
+            | OpCode::VarSetN2 | OpCode::VarBindN2 | OpCode::CallN2
+            | OpCode::UnbindN2 | OpCode::ConstantN2 => {
+                read_u16(codes, &mut pc) as u64
+            }
+
+            // Branch opcodes read their own arg below
+            OpCode::Goto | OpCode::GotoIfNil | OpCode::GotoIfNonNil
+            | OpCode::GotoIfNilElsePop | OpCode::GotoIfNonNilElsePop => 0,
+
+            // Return and no-arg opcodes
+            _ => 0,
+        };
+
+        match op {
+            // ── Return: pop and return value ────────────────
             OpCode::Return => {
-                let inst = b.ins().call(h.pop_return, &[env, cx_v]);
+                let inst = b.ins().call(fr_ret, &[env, cx_v]);
                 let ret = b.inst_results(inst)[0];
                 b.ins().return_(&[ret]);
                 block_filled = true;
             }
 
-            // ── Branches ────────────────────────────────────
+            // ── Goto: unconditional jump ────────────────────
             OpCode::Goto => {
                 let offset = read_u16(codes, &mut pc) as usize;
-                let target = get_or_create_block(&block_map, offset, &mut b);
+                let target = *block_map.get(&offset).expect("goto target");
                 b.ins().jump(target, &[]);
                 let dead = b.create_block();
                 b.switch_to_block(dead);
                 current = dead;
                 block_filled = false;
             }
+
+            // ── GotoIfNil: pop, branch if nil ───────────────
             OpCode::GotoIfNil => {
                 let offset = read_u16(codes, &mut pc) as usize;
-                let target = get_or_create_block(&block_map, offset, &mut b);
+                let target = *block_map.get(&offset).expect("branch target");
                 let fall = b.create_block();
-                let inst = b.ins().call(h.peek_pop, &[env, cx_v]);
+                let inst = b.ins().call(fr_pop, &[env, cx_v]);
                 let val = b.inst_results(inst)[0];
                 let zero = b.ins().iconst(types::I64, 0);
                 let is_nil = b.ins().icmp(IntCC::Equal, val, zero);
@@ -334,11 +704,13 @@ pub fn compile(codes: &[u8]) -> Option<JitFn> {
                 current = fall;
                 block_filled = false;
             }
+
+            // ── GotoIfNonNil: pop, branch if non-nil ────────
             OpCode::GotoIfNonNil => {
                 let offset = read_u16(codes, &mut pc) as usize;
-                let target = get_or_create_block(&block_map, offset, &mut b);
+                let target = *block_map.get(&offset).expect("branch target");
                 let fall = b.create_block();
-                let inst = b.ins().call(h.peek_pop, &[env, cx_v]);
+                let inst = b.ins().call(fr_pop, &[env, cx_v]);
                 let val = b.inst_results(inst)[0];
                 let zero = b.ins().iconst(types::I64, 0);
                 let is_nil = b.ins().icmp(IntCC::Equal, val, zero);
@@ -349,9 +721,48 @@ pub fn compile(codes: &[u8]) -> Option<JitFn> {
                 block_filled = false;
             }
 
-            // ── Anything else: bail ─────────────────────────
-            _ => {
-                eprintln!("    unsupported opcode: {op:?} (0x{:02x})", op as u8);
+            // ── GotoIfNilElsePop: peek, branch if nil, else pop ─
+            OpCode::GotoIfNilElsePop => {
+                let offset = read_u16(codes, &mut pc) as usize;
+                let target = *block_map.get(&offset).expect("branch target");
+                let fall = b.create_block();
+                let inst = b.ins().call(fr_peek, &[env, cx_v]);
+                let val = b.inst_results(inst)[0];
+                let zero = b.ins().iconst(types::I64, 0);
+                let is_nil = b.ins().icmp(IntCC::Equal, val, zero);
+                b.ins().brif(is_nil, target, &[], fall, &[]);
+                b.switch_to_block(fall);
+                b.seal_block(fall);
+                // Pop in the fallthrough (non-nil) case
+                b.ins().call(fr_pop, &[env, cx_v]);
+                current = fall;
+                block_filled = false;
+            }
+
+            // ── GotoIfNonNilElsePop: peek, branch if non-nil, else pop
+            OpCode::GotoIfNonNilElsePop => {
+                let offset = read_u16(codes, &mut pc) as usize;
+                let target = *block_map.get(&offset).expect("branch target");
+                let fall = b.create_block();
+                let inst = b.ins().call(fr_peek, &[env, cx_v]);
+                let val = b.inst_results(inst)[0];
+                let zero = b.ins().iconst(types::I64, 0);
+                let is_nil = b.ins().icmp(IntCC::Equal, val, zero);
+                b.ins().brif(is_nil, fall, &[], target, &[]);
+                b.switch_to_block(fall);
+                b.seal_block(fall);
+                // Pop in the fallthrough (nil) case
+                b.ins().call(fr_pop, &[env, cx_v]);
+                current = fall;
+                block_filled = false;
+            }
+
+            // ── VM-level opcodes we can't support in tier 1 ─
+            OpCode::PushCondtionCase | OpCode::PushCatch
+            | OpCode::SaveExcursion | OpCode::SaveRestriction
+            | OpCode::UnwindProtect | OpCode::Switch => {
+                // These need the handler stack / VM state
+                eprintln!("    unsupported VM opcode: {op:?}");
                 if !block_filled {
                     let zero = b.ins().iconst(types::I64, 0);
                     b.ins().return_(&[zero]);
@@ -361,10 +772,33 @@ pub fn compile(codes: &[u8]) -> Option<JitFn> {
                 module.clear_context(&mut ctx);
                 return None;
             }
+
+            // ── Everything else: dispatch to jit_exec_op ────
+            _ => {
+                let op_v = b.ins().iconst(types::I64, op_byte as i64);
+                let arg_v = b.ins().iconst(types::I64, arg as i64);
+                let inst = b.ins().call(fr_exec, &[env, cx_v, consts, op_v, arg_v]);
+                let status = b.inst_results(inst)[0];
+                // Check for error (status == 2)
+                let two = b.ins().iconst(types::I64, 2);
+                let is_err = b.ins().icmp(IntCC::Equal, status, two);
+                let ok_block = b.create_block();
+                let err_block = b.create_block();
+                b.ins().brif(is_err, err_block, &[], ok_block, &[]);
+                // Error path: return 0 (nil / error sentinel)
+                b.switch_to_block(err_block);
+                b.seal_block(err_block);
+                let zero = b.ins().iconst(types::I64, 0);
+                b.ins().return_(&[zero]);
+                // Continue
+                b.switch_to_block(ok_block);
+                b.seal_block(ok_block);
+                current = ok_block;
+                block_filled = false;
+            }
         }
     }
 
-    // Implicit nil return if we fall off the end
     if !block_filled {
         let zero = b.ins().iconst(types::I64, 0);
         b.ins().return_(&[zero]);
@@ -381,7 +815,6 @@ pub fn compile(codes: &[u8]) -> Option<JitFn> {
     module.finalize_definitions().ok()?;
 
     let ptr = module.get_finalized_function(func_id);
-    // SAFETY: we just compiled this with the correct signature
     Some(unsafe { std::mem::transmute(ptr) })
 }
 
@@ -444,70 +877,4 @@ fn get_or_create_block(
     *map.get(&offset).expect("branch target not found in block map")
 }
 
-// ── Helper function declarations ────────────────────────────────────────
-
-struct HelperFuncIds {
-    constant: cranelift_module::FuncId,
-    stack_ref: cranelift_module::FuncId,
-    stack_set: cranelift_module::FuncId,
-    discard: cranelift_module::FuncId,
-    duplicate: cranelift_module::FuncId,
-    pop_return: cranelift_module::FuncId,
-    peek_pop: cranelift_module::FuncId,
-}
-
-struct HelperFuncRefs {
-    constant: cranelift_codegen::ir::FuncRef,
-    stack_ref: cranelift_codegen::ir::FuncRef,
-    stack_set: cranelift_codegen::ir::FuncRef,
-    discard: cranelift_codegen::ir::FuncRef,
-    duplicate: cranelift_codegen::ir::FuncRef,
-    pop_return: cranelift_codegen::ir::FuncRef,
-    peek_pop: cranelift_codegen::ir::FuncRef,
-}
-
-fn declare_helpers(module: &mut JITModule, ptr_ty: types::Type) -> HelperFuncIds {
-    // (env, cx, consts, idx) -> i64
-    let mut sig4 = module.make_signature();
-    sig4.params.extend_from_slice(&[
-        AbiParam::new(ptr_ty), AbiParam::new(ptr_ty),
-        AbiParam::new(ptr_ty), AbiParam::new(types::I64),
-    ]);
-    sig4.returns.push(AbiParam::new(types::I64));
-
-    // (env, cx, idx) -> i64
-    let mut sig3 = module.make_signature();
-    sig3.params.extend_from_slice(&[
-        AbiParam::new(ptr_ty), AbiParam::new(ptr_ty), AbiParam::new(types::I64),
-    ]);
-    sig3.returns.push(AbiParam::new(types::I64));
-
-    // (env, cx) -> i64
-    let mut sig2 = module.make_signature();
-    sig2.params.extend_from_slice(&[AbiParam::new(ptr_ty), AbiParam::new(ptr_ty)]);
-    sig2.returns.push(AbiParam::new(types::I64));
-
-    HelperFuncIds {
-        constant: module.declare_function("jit_constant", Linkage::Import, &sig4).unwrap(),
-        stack_ref: module.declare_function("jit_stack_ref", Linkage::Import, &sig3).unwrap(),
-        stack_set: module.declare_function("jit_stack_set", Linkage::Import, &sig3).unwrap(),
-        discard: module.declare_function("jit_discard", Linkage::Import, &sig2).unwrap(),
-        duplicate: module.declare_function("jit_duplicate", Linkage::Import, &sig2).unwrap(),
-        pop_return: module.declare_function("jit_pop_return", Linkage::Import, &sig2).unwrap(),
-        peek_pop: module.declare_function("jit_peek_pop", Linkage::Import, &sig2).unwrap(),
-    }
-}
-
-impl HelperFuncIds {
-    fn import_into(self, module: &mut JITModule, builder: &mut FunctionBuilder) -> HelperFuncRefs {
-        HelperFuncRefs {
-            constant: module.declare_func_in_func(self.constant, builder.func),
-            stack_ref: module.declare_func_in_func(self.stack_ref, builder.func),
-            stack_set: module.declare_func_in_func(self.stack_set, builder.func),
-            discard: module.declare_func_in_func(self.discard, builder.func),
-            duplicate: module.declare_func_in_func(self.duplicate, builder.func),
-            pop_return: module.declare_func_in_func(self.pop_return, builder.func),
-            peek_pop: module.declare_func_in_func(self.peek_pop, builder.func),
-        }
-    }
-}
+// (old helper infrastructure removed — now using unified jit_exec_op dispatch)
