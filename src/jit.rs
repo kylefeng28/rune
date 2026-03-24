@@ -156,11 +156,23 @@ pub extern "C" fn jit_exec_op(
                 | op::CallN | op::CallN2 => {
                     let arg_cnt = arg as usize;
                     let func: crate::core::object::Function = env.stack[arg_cnt].bind(cx).try_into()?;
-                    let mut frame = crate::core::env::stack::CallFrame::new_with_args(env, arg_cnt);
-                    root!(func, cx);
-                    let result = func.call(&mut frame, None, cx)?;
-                    drop(frame);
-                    env.stack.top().set(result);
+                    let name = match func.untag() {
+                        crate::core::object::FunctionType::Symbol(x) => x.name().to_owned(),
+                        _ => String::from("lambda"),
+                    };
+                    match func.untag() {
+                        crate::core::object::FunctionType::SubrFn(f) => {
+                            let mut frame = crate::core::env::CallFrame::new_with_args(env, arg_cnt);
+                            frame.finalize_arguments();
+                            let result = (*f).call(frame.arg_count(), &mut frame, cx)?;
+                            drop(frame);
+                            env.stack.top().set(result);
+                        }
+                        _ => {
+                            // ByteFn, closures, symbol indirects — fall back
+                            return Err(anyhow::anyhow!("JIT call: non-subr dispatch not yet supported for {name}"));
+                        }
+                    }
                     cx.garbage_collect(false);
                 }
 
