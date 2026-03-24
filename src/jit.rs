@@ -33,7 +33,6 @@ impl JIT {
         flag_builder.set("use_colocated_libcalls", "false").unwrap();
         flag_builder.set("is_pic", "false").unwrap();
 
-        // let isa_builder = cranelift_codegen::isa::lookup_by_name("aarch64-apple-darwin").unwrap();
         use target_lexicon::Triple;
         let isa_builder = cranelift_codegen::isa::lookup(Triple::host()).unwrap();
 
