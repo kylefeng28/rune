@@ -26,7 +26,7 @@ pub(crate) struct ByteFnPrototype {
     pub(super) constants: Slot<&'static LispVec>,
     /// JIT-compiled native code for this function, if available.
     #[no_trace]
-    pub(crate) jit_code: Option<crate::jit::JitFn>,
+    pub(crate) jit_code: std::cell::Cell<Option<crate::jit::JitFn>>,
 }
 
 /// A function implemented in lisp. Note that all functions are byte compiled,
@@ -77,7 +77,7 @@ impl ByteFn {
             op_codes,
             args,
             depth,
-            jit_code: None,
+            jit_code: std::cell::Cell::new(None),
         }
     }
 }

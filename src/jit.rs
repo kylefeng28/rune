@@ -10,7 +10,6 @@
 
 use cranelift_codegen::ir::{types, AbiParam, InstBuilder, condcodes::IntCC};
 use cranelift_codegen::settings::{self, Configurable};
-use cranelift_codegen::Context as CraneliftContext;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module};
@@ -94,6 +93,40 @@ pub extern "C" fn jit_peek_pop(env: *mut u8, cx: *mut u8) -> u64 {
         let top = env.stack.pop(cx);
         std::mem::transmute(top)
     }
+}
+
+// ── AOT compilation ─────────────────────────────────────────────────────
+
+/// Eagerly compile all ByteFn objects reachable from the global symbol table.
+pub fn aot_compile_all(cx: &crate::core::gc::Context) {
+    use crate::core::env::INTERNED_SYMBOLS;
+    use crate::core::object::FunctionType;
+
+    eprintln!("Starting AOT compilation...");
+    let mut compiled = 0usize;
+    let mut failed = 0usize;
+
+    let map = INTERNED_SYMBOLS.lock().unwrap();
+    for (name, sym) in map.iter() {
+        if let Some(func) = sym.follow_indirect(cx) {
+            if let FunctionType::ByteFn(bf) = func.untag() {
+                if bf.jit_code.get().is_some() {
+                    continue;
+                }
+                eprintln!("  JIT compiling {name}");
+                match compile(bf.codes()) {
+                    Some(jit_fn) => {
+                        bf.jit_code.set(Some(jit_fn));
+                        compiled += 1;
+                    }
+                    None => {
+                        failed += 1;
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("AOT compilation complete: {compiled} compiled, {failed} unsupported");
 }
 
 // ── Compiler ────────────────────────────────────────────────────────────

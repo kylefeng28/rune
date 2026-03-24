@@ -63,6 +63,8 @@ struct Args {
     dump: bool,
     #[arg(long, value_name = "FILE")]
     load_dump: Option<String>,
+    #[arg(long)]
+    aot: bool,
 }
 
 fn main() -> Result<(), ()> {
@@ -101,6 +103,10 @@ fn main() -> Result<(), ()> {
         eprintln!("Dumping heap to {}", path.display());
         dump::dump_to_file(path, env, cx).map_err(|e| eprintln!("Dump failed: {e}"))?;
         eprintln!("Dump complete");
+    }
+
+    if args.aot {
+        jit::aot_compile_all(cx);
     }
 
     for file in args.load {

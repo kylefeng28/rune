@@ -918,7 +918,7 @@ pub(crate) fn call<'ob>(
     let func_ref = func.bind(cx);
 
     // If JIT-compiled code is available, call it directly
-    if let Some(jit_fn) = func_ref.jit_code {
+    if let Some(jit_fn) = func_ref.jit_code.get() {
         let vm = VM {
             pc: ProgramCounter::new(func_ref.codes()),
             func: Slot::new(func_ref),
