@@ -12,7 +12,7 @@ use anyhow::{Result, bail};
 use rune_core::macros::{bail_err, rebind, root};
 use rune_macros::{Trace, defun};
 
-mod opcode;
+pub(crate) mod opcode;
 
 /// An program counter. This is implemented as a bound checked range pointer.
 // TODO: If the GC moves the bytecode, this will be invalid. We need to fix this
