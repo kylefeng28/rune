@@ -20,6 +20,23 @@ defvar!(MESSAGE_NAME);
 defvar!(MESSAGE_TYPE, "new message");
 
 #[defun]
+fn print(format_string: &str, args: &[Object]) -> Result<String> {
+    let message = format(format_string, args)?;
+    println!("{message}");
+    std::io::stdout().flush()?;
+    Ok(message)
+}
+
+// Same as print() without the newline
+#[defun]
+fn prin1(format_string: &str, args: &[Object]) -> Result<String> {
+    let message = format(format_string, args)?;
+    print!("{message}");
+    std::io::stdout().flush()?;
+    Ok(message)
+}
+
+#[defun]
 fn format(string: &str, objects: &[Object]) -> Result<String> {
     let mut result = String::new();
     let mut arguments = objects.iter();
