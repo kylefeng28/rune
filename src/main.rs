@@ -26,6 +26,7 @@ mod floatfns;
 mod fns;
 mod interpreter;
 mod intervals;
+mod jit;
 mod keymap;
 mod library;
 mod lisp;

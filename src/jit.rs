@@ -4,12 +4,17 @@ use cranelift_codegen::ir::{
 };
 use cranelift_codegen::settings;
 use cranelift_codegen::settings::Configurable;
-use cranelift_codegen::Context;
+use cranelift_codegen::{Context as CraneliftContext};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 
-use crate::ir::*;
+use crate::core::{
+    gc::{Context as GcContext},
+    object::{FunctionType, Gc, Object},
+};
+
+use crate::eval::{ErrorType, EvalError, EvalResult, add_trace};
 
 #[repr(C)]
 struct StrResult {
@@ -19,7 +24,7 @@ struct StrResult {
 
 pub struct JIT {
     module: JITModule,
-    ctx: Context,
+    ctx: CraneliftContext,
 }
 
 impl JIT {
