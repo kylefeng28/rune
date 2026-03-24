@@ -69,12 +69,19 @@ struct DumpedBinding {
     val_id: ObjId,
 }
 
+struct DumpedProp {
+    sym_id: ObjId,
+    propname_id: ObjId,
+    val_id: ObjId,
+}
+
 struct DumpState {
     /// Maps live pointer address -> assigned object id (handles cycles + dedup)
     seen: HashMap<usize, ObjId>,
     objects: Vec<DumpedObject>,
     symbols: Vec<DumpedSymbol>,
     env: Vec<DumpedBinding>,
+    props: Vec<DumpedProp>,
 }
 
 impl Display for DumpedObject {
@@ -146,7 +153,13 @@ fn fmt_id_list(f: &mut fmt::Formatter<'_>, ids: &[ObjId]) -> fmt::Result {
 
 impl DumpState {
     fn new() -> Self {
-        Self { seen: HashMap::new(), objects: Vec::new(), symbols: Vec::new(), env: Vec::new() }
+        Self {
+            seen: HashMap::new(),
+            objects: Vec::new(),
+            symbols: Vec::new(),
+            env: Vec::new(),
+            props: Vec::new(),
+        }
     }
 
     /// Serialize an object and return its id. If already visited (cycle or
@@ -261,6 +274,21 @@ impl DumpState {
         }
     }
 
+    /// Serialize the Env property lists (symbol -> [(propname, value), ...]).
+    fn dump_props(&mut self, env: &Rt<Env>, _cx: &Context) {
+        for (sym_slot, plist) in env.props.iter() {
+            let sym_obj: Object = (**sym_slot).into();
+            let sym_id = self.dump_object(sym_obj);
+            for (propname_slot, val_slot) in plist.iter() {
+                let propname_obj: Object = (**propname_slot).into();
+                let val: Object = **val_slot;
+                let propname_id = self.dump_object(propname_obj);
+                let val_id = self.dump_object(val);
+                self.props.push(DumpedProp { sym_id, propname_id, val_id });
+            }
+        }
+    }
+
     fn into_output(self) -> std::string::String {
         let mut out = std::string::String::new();
         writeln!(out, ".HEADER").unwrap();
@@ -289,6 +317,12 @@ impl DumpState {
         for b in &self.env {
             writeln!(out, "  @{} = @{}", b.sym_id, b.val_id).unwrap();
         }
+        writeln!(out).unwrap();
+
+        writeln!(out, ".PROPS").unwrap();
+        for p in &self.props {
+            writeln!(out, "  @{} @{} = @{}", p.sym_id, p.propname_id, p.val_id).unwrap();
+        }
         out
     }
 }
@@ -313,6 +347,7 @@ pub(crate) fn dump_to_file(path: &Path, env: &Rt<Env>, cx: &Context) -> Result<(
     let mut state = DumpState::new();
     state.dump_symbols(cx);
     state.dump_env(env, cx);
+    state.dump_props(env, cx);
     let output = state.into_output();
     std::fs::write(path, output)
 }
@@ -337,12 +372,14 @@ struct DumpFile {
     objects: Vec<DumpedObject>,
     symbols: Vec<DumpedSymbol>,
     env: Vec<DumpedBinding>,
+    props: Vec<DumpedProp>,
 }
 
 fn parse_dump(input: &str) -> Result<DumpFile, String> {
     let mut objects: Vec<Option<DumpedObject>> = Vec::new();
     let mut symbols = Vec::new();
     let mut env = Vec::new();
+    let mut props = Vec::new();
     let mut section = "";
 
     for line in input.lines() {
@@ -356,6 +393,7 @@ fn parse_dump(input: &str) -> Result<DumpFile, String> {
                 ".OBJECTS" => "objects",
                 ".SYMBOLS" => "symbols",
                 ".ENV" => "env",
+                ".PROPS" => "props",
                 _ => return Err(format!("unknown section: {line}")),
             };
             continue;
@@ -372,6 +410,7 @@ fn parse_dump(input: &str) -> Result<DumpFile, String> {
             }
             "symbols" => symbols.push(parse_symbol_line(line)?),
             "env" => env.push(parse_binding_line(line)?),
+            "props" => props.push(parse_prop_line(line)?),
             _ => {}
         }
     }
@@ -382,7 +421,7 @@ fn parse_dump(input: &str) -> Result<DumpFile, String> {
         .map(|(i, o)| o.ok_or_else(|| format!("missing object @{i}")))
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(DumpFile { objects, symbols, env })
+    Ok(DumpFile { objects, symbols, env, props })
 }
 
 /// Parse `@{id} {type} {fields...}` into (ObjId, DumpedObject).
@@ -562,6 +601,17 @@ fn parse_symbol_line(line: &str) -> Result<DumpedSymbol, String> {
 fn parse_binding_line(line: &str) -> Result<DumpedBinding, String> {
     let (left, right) = line.split_once(" = ").ok_or("expected = ")?;
     Ok(DumpedBinding { sym_id: parse_ref(left)?, val_id: parse_ref(right)? })
+}
+
+/// Parse `@sym @propname = @val`
+fn parse_prop_line(line: &str) -> Result<DumpedProp, String> {
+    let (left, val) = line.split_once(" = ").ok_or("expected = in prop")?;
+    let (sym, propname) = left.split_once(' ').ok_or("expected space in prop")?;
+    Ok(DumpedProp {
+        sym_id: parse_ref(sym)?,
+        propname_id: parse_ref(propname)?,
+        val_id: parse_ref(val)?,
+    })
 }
 
 // ── Loader ──────────────────────────────────────────────────────────────────
@@ -769,6 +819,18 @@ pub(crate) fn load_dump(path: &Path, env: &mut Rt<Env>, cx: &mut Context) -> Res
         let val_obj = table[binding.val_id as usize];
         if let ObjectType::Symbol(sym) = sym_obj.untag() {
             env.vars.insert(sym, val_obj);
+        }
+    }
+
+    // Rebuild symbol property lists
+    for prop in &dump.props {
+        let sym_obj = table[prop.sym_id as usize];
+        let propname_obj = table[prop.propname_id as usize];
+        let val_obj = table[prop.val_id as usize];
+        if let (ObjectType::Symbol(sym), ObjectType::Symbol(propname)) =
+            (sym_obj.untag(), propname_obj.untag())
+        {
+            env.set_prop(sym, propname, val_obj);
         }
     }
 
