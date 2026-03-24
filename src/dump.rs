@@ -38,7 +38,7 @@ enum DumpedObject {
     /// recover the function pointer by name lookup.
     Subr(std::string::String),
     Record(Vec<ObjId>),
-    HashTable,
+    HashTable(Vec<(ObjId, ObjId)>),
     Buffer,
     CharTable,
     BigInt(std::string::String),
@@ -105,7 +105,14 @@ impl Display for DumpedObject {
                 fmt_id_list(f, elems)?;
                 write!(f, "]")
             }
-            Self::HashTable => write!(f, "hashtable <opaque>"),
+            Self::HashTable(entries) => {
+                write!(f, "hashtable [")?;
+                for (i, (k, v)) in entries.iter().enumerate() {
+                    if i > 0 { write!(f, " ")?; }
+                    write!(f, "{k}:{v}")?;
+                }
+                write!(f, "]")
+            }
             Self::Buffer => write!(f, "buffer <opaque>"),
             Self::CharTable => write!(f, "chartable <opaque>"),
             Self::BigInt(s) => write!(f, "bigint {s}"),
@@ -190,7 +197,13 @@ impl DumpState {
                 }
             }
             ObjectType::SubrFn(subr) => DumpedObject::Subr(subr.name.to_owned()),
-            ObjectType::HashTable(_) => DumpedObject::HashTable,
+            ObjectType::HashTable(ht) => {
+                let entries: Vec<(ObjId, ObjId)> = (0..ht.len())
+                    .filter_map(|i| ht.get_index(i))
+                    .map(|(k, v)| (self.dump_object(k), self.dump_object(v)))
+                    .collect();
+                DumpedObject::HashTable(entries)
+            }
             ObjectType::Record(rec) => {
                 let elems = rec.iter().map(|cell| self.dump_object(cell.get())).collect();
                 DumpedObject::Record(elems)
@@ -417,7 +430,24 @@ fn parse_object_line(line: &str) -> Result<(ObjId, DumpedObject), String> {
     } else if let Some(val) = rest.strip_prefix("bigint ") {
         DumpedObject::BigInt(val.to_owned())
     } else if rest.starts_with("hashtable") {
-        DumpedObject::HashTable
+        if let Some(val) = rest.strip_prefix("hashtable [") {
+            let inner = val.strip_suffix(']').ok_or("expected ]")?;
+            let entries = if inner.trim().is_empty() {
+                Vec::new()
+            } else {
+                inner.split_whitespace()
+                    .map(|pair| {
+                        let (k, v) = pair.split_once(':').ok_or("expected k:v in hashtable")?;
+                        Ok((k.trim_start_matches('@').parse::<ObjId>().map_err(|e| e.to_string())?,
+                            v.trim_start_matches('@').parse::<ObjId>().map_err(|e| e.to_string())?))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?
+            };
+            DumpedObject::HashTable(entries)
+        } else {
+            // Legacy format: "hashtable <opaque>"
+            DumpedObject::HashTable(Vec::new())
+        }
     } else if rest.starts_with("buffer") {
         DumpedObject::Buffer
     } else if rest.starts_with("chartable") {
@@ -562,8 +592,9 @@ fn parse_binding_line(line: &str) -> Result<DumpedBinding, String> {
 use crate::core::{
     cons::Cons,
     env::intern,
-    object::{FnArgs, IntoObject, Symbol},
+    object::{FnArgs, HashTable, IntoObject, Symbol},
 };
+use rune_core::hashmap::IndexMap;
 
 pub(crate) fn load_dump(
     path: &Path,
@@ -642,9 +673,14 @@ pub(crate) fn load_dump(
                     s.parse().map_err(|e| format!("bad bigint: {e}"))?;
                 cx.add(n)
             }
+            // Hash tables: allocate empty, patched in pass 2
+            DumpedObject::HashTable(entries) => {
+                let ht: HashTable = IndexMap::default();
+                let obj: Object = ht.into_obj(cx).into();
+                obj
+            }
             // Opaque types — we can't reconstruct these, use nil as placeholder
-            DumpedObject::HashTable
-            | DumpedObject::Buffer
+            DumpedObject::Buffer
             | DumpedObject::CharTable
             | DumpedObject::ChannelSender
             | DumpedObject::ChannelReceiver => NIL,
@@ -686,6 +722,13 @@ pub(crate) fn load_dump(
                     let cells = r.try_mut().map_err(|e| e.to_string())?;
                     for (i, elem_id) in elems.iter().enumerate() {
                         cells[i].set(table[*elem_id as usize]);
+                    }
+                }
+            }
+            DumpedObject::HashTable(entries) => {
+                if let ObjectType::HashTable(ht) = table[id].untag() {
+                    for (k_id, v_id) in entries {
+                        ht.insert(table[*k_id as usize], table[*v_id as usize]);
                     }
                 }
             }
