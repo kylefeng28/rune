@@ -273,6 +273,9 @@ fn byte_compile_all(cx: &mut Context, env: &mut Rt<Env>) {
     for name in &names {
         if name.starts_with("cl-generic") || name.starts_with("cl--")
             || name.starts_with("macroexp") || name.starts_with("byte-compile") || name.starts_with("byte-opt")
+                // rx (regex): rx--lookup-def, rx--expand-def
+                || name.starts_with("rx--")
+                || name.starts_with("posn-image")
         {
             continue;
         }

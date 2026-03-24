@@ -422,7 +422,7 @@ impl<'ob> RootedVM<'_, '_, '_> {
                     };
                     self.handlers.push(handler);
                 }
-                op::PushCatch => todo!("PushCatch bytecode"),
+                op::PushCatch => bail_err!("PushCatch bytecode"),
                 op::Nth => {
                     let list = self.env.stack.pop(cx);
                     let top = self.env.stack.top();
@@ -534,10 +534,10 @@ impl<'ob> RootedVM<'_, '_, '_> {
                     let value = data::get(top, prop, self.env, cx);
                     self.env.stack.top().set(value);
                 }
-                op::Substring => todo!("Substring bytecode"),
-                op::Concat2 => todo!("Concat2 bytecode"),
-                op::Concat3 => todo!("Concat3 bytecode"),
-                op::Concat4 => todo!("Concat4 bytecode"),
+                op::Substring => bail_err!("Substring bytecode"),
+                op::Concat2 => bail_err!("Concat2 bytecode"),
+                op::Concat3 => bail_err!("Concat3 bytecode"),
+                op::Concat4 => bail_err!("Concat4 bytecode"),
                 op::Sub1 => {
                     let top = self.env.stack.top();
                     top.set(cx.add(arith::sub_one(top.bind_as(cx)?)));
@@ -571,7 +571,7 @@ impl<'ob> RootedVM<'_, '_, '_> {
                     let top = self.env.stack.top();
                     top.set(arith::greater_than_or_eq(top.bind_as(cx)?, v1));
                 }
-                op::Diff => todo!("Diff bytecode"),
+                op::Diff => bail_err!("Diff bytecode"),
                 op::Negate => {
                     let top = self.env.stack.top();
                     top.set(cx.add(arith::sub(top.bind_as(cx)?, &[])));
@@ -600,34 +600,34 @@ impl<'ob> RootedVM<'_, '_, '_> {
                     let args = &[top.bind_as(cx)?, arg1.try_into()?];
                     top.set(cx.add(arith::mul(args)));
                 }
-                op::Point => todo!("Point bytecode"),
-                op::GotoChar => todo!("GotoChar bytecode"),
-                op::Insert => todo!("Insert bytecode"),
-                op::PointMax => todo!("PointMax bytecode"),
-                op::PointMin => todo!("PointMin bytecode"),
-                op::CharAfter => todo!("CharAfter bytecode"),
-                op::FollowingChar => todo!("FollowingChar bytecode"),
-                op::PrecedingChar => todo!("PrecedingChar bytecode"),
-                op::CurrentColumn => todo!("CurrentColumn bytecode"),
-                op::IndentTo => todo!("IndentTo bytecode"),
-                op::EndOfLineP => todo!("EndOfLineP bytecode"),
-                op::EndOfBufferP => todo!("EndOfBufferP bytecode"),
-                op::BeginningOfLineP => todo!("BeginningOfLineP bytecode"),
-                op::BeginningOfBufferP => todo!("BeginningOfBufferP bytecode"),
-                op::CurrentBuffer => todo!("CurrentBuffer bytecode"),
-                op::SetBuffer => todo!("SetBuffer bytecode"),
-                op::SaveCurrentBuffer1 => todo!("SaveCurrentBuffer1 bytecode"),
-                op::ForwardChar => todo!("ForwardChar bytecode"),
-                op::ForwardWord => todo!("ForwardWord bytecode"),
-                op::SkipCharsForward => todo!("SkipCharsForward bytecode"),
-                op::SkipCharsBackward => todo!("SkipCharsBackward bytecode"),
-                op::ForwardLine => todo!("ForwardLine bytecode"),
-                op::CharSyntax => todo!("CharSyntax bytecode"),
-                op::BufferSubstring => todo!("BufferSubstring bytecode"),
-                op::DeleteRegion => todo!("DeleteRegion bytecode"),
-                op::NarrowToRegion => todo!("NarrowToRegion bytecode"),
-                op::Widen => todo!("Widen bytecode"),
-                op::EndOfLine => todo!("EndOfLine bytecode"),
+                op::Point => bail_err!("Point bytecode"),
+                op::GotoChar => bail_err!("GotoChar bytecode"),
+                op::Insert => bail_err!("Insert bytecode"),
+                op::PointMax => bail_err!("PointMax bytecode"),
+                op::PointMin => bail_err!("PointMin bytecode"),
+                op::CharAfter => bail_err!("CharAfter bytecode"),
+                op::FollowingChar => bail_err!("FollowingChar bytecode"),
+                op::PrecedingChar => bail_err!("PrecedingChar bytecode"),
+                op::CurrentColumn => bail_err!("CurrentColumn bytecode"),
+                op::IndentTo => bail_err!("IndentTo bytecode"),
+                op::EndOfLineP => bail_err!("EndOfLineP bytecode"),
+                op::EndOfBufferP => bail_err!("EndOfBufferP bytecode"),
+                op::BeginningOfLineP => bail_err!("BeginningOfLineP bytecode"),
+                op::BeginningOfBufferP => bail_err!("BeginningOfBufferP bytecode"),
+                op::CurrentBuffer => bail_err!("CurrentBuffer bytecode"),
+                op::SetBuffer => bail_err!("SetBuffer bytecode"),
+                op::SaveCurrentBuffer1 => bail_err!("SaveCurrentBuffer1 bytecode"),
+                op::ForwardChar => bail_err!("ForwardChar bytecode"),
+                op::ForwardWord => bail_err!("ForwardWord bytecode"),
+                op::SkipCharsForward => bail_err!("SkipCharsForward bytecode"),
+                op::SkipCharsBackward => bail_err!("SkipCharsBackward bytecode"),
+                op::ForwardLine => bail_err!("ForwardLine bytecode"),
+                op::CharSyntax => bail_err!("CharSyntax bytecode"),
+                op::BufferSubstring => bail_err!("BufferSubstring bytecode"),
+                op::DeleteRegion => bail_err!("DeleteRegion bytecode"),
+                op::NarrowToRegion => bail_err!("NarrowToRegion bytecode"),
+                op::Widen => bail_err!("Widen bytecode"),
+                op::EndOfLine => bail_err!("EndOfLine bytecode"),
                 op::ConstantN2 => {
                     let idx = self.pc.arg2();
                     let cnst = self.get_const(idx.into(), cx);
@@ -698,16 +698,16 @@ impl<'ob> RootedVM<'_, '_, '_> {
                     let top = self.env.stack[0].bind(cx);
                     self.env.stack.push(top);
                 }
-                op::SaveExcursion => todo!("SaveExcursion bytecode"),
-                op::SaveRestriction => todo!("SaveRestriction bytecode"),
-                op::UnwindProtect => todo!("UnwindProtect bytecode"),
-                op::SetMarker => todo!("SetMarker bytecode"),
-                op::MatchBeginning => todo!("MatchBeginning bytecode"),
-                op::MatchEnd => todo!("MatchEnd bytecode"),
-                op::Upcase => todo!("Upcase bytecode"),
-                op::Downcase => todo!("Downcase bytecode"),
-                op::StringEqlSign => todo!("StringEqlSign bytecode"),
-                op::StringLessThan => todo!("StringLessThan bytecode"),
+                op::SaveExcursion => bail_err!("SaveExcursion bytecode"),
+                op::SaveRestriction => bail_err!("SaveRestriction bytecode"),
+                op::UnwindProtect => bail_err!("UnwindProtect bytecode"),
+                op::SetMarker => bail_err!("SetMarker bytecode"),
+                op::MatchBeginning => bail_err!("MatchBeginning bytecode"),
+                op::MatchEnd => bail_err!("MatchEnd bytecode"),
+                op::Upcase => bail_err!("Upcase bytecode"),
+                op::Downcase => bail_err!("Downcase bytecode"),
+                op::StringEqlSign => bail_err!("StringEqlSign bytecode"),
+                op::StringLessThan => bail_err!("StringLessThan bytecode"),
                 op::Equal => {
                     let rhs = self.env.stack.pop(cx);
                     let top = self.env.stack.top();
@@ -760,8 +760,8 @@ impl<'ob> RootedVM<'_, '_, '_> {
                     let top = self.env.stack.top();
                     top.set(fns::nconc(&[top.bind_as(cx)?, list2.try_into()?])?);
                 }
-                op::Quo => todo!("Quo bytecode"),
-                op::Rem => todo!("Rem bytecode"),
+                op::Quo => bail_err!("Quo bytecode"),
+                op::Rem => bail_err!("Rem bytecode"),
                 op::Numberp => {
                     let top = self.env.stack.top();
                     top.set(data::numberp(top.bind(cx)));
@@ -778,8 +778,8 @@ impl<'ob> RootedVM<'_, '_, '_> {
                     self.env.stack.truncate(len - (size - 1));
                     self.env.stack.top().set(list);
                 }
-                op::ConcatN => todo!("ConcatN bytecode"),
-                op::InsertN => todo!("InsertN bytecode"),
+                op::ConcatN => bail_err!("ConcatN bytecode"),
+                op::InsertN => bail_err!("InsertN bytecode"),
                 op::Switch => {
                     let ObjectType::HashTable(table) = self.env.stack.pop(cx).untag() else {
                         unreachable!("switch table was not a hash table")
