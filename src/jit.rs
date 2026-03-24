@@ -129,6 +129,34 @@ pub fn aot_compile_all(cx: &crate::core::gc::Context) {
     eprintln!("AOT compilation complete: {compiled} compiled, {failed} unsupported");
 }
 
+/// Scan all ByteFns and report every unique opcode used (for development).
+pub fn scan_all_opcodes(cx: &crate::core::gc::Context) {
+    use crate::core::env::INTERNED_SYMBOLS;
+    use crate::core::object::FunctionType;
+    use crate::bytecode::opcode::OpCode;
+    use std::collections::BTreeSet;
+
+    let mut all_ops = BTreeSet::new();
+    let map = INTERNED_SYMBOLS.lock().unwrap();
+    for (_name, sym) in map.iter() {
+        if let Some(func) = sym.follow_indirect(cx) {
+            if let FunctionType::ByteFn(bf) = func.untag() {
+                for &byte in bf.codes() {
+                    if let Ok(op) = OpCode::try_from(byte) {
+                        all_ops.insert(op as u8);
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("All opcodes used across ByteFns:");
+    for byte in &all_ops {
+        if let Ok(op) = OpCode::try_from(*byte) {
+            eprintln!("  {op:?} (0x{byte:02x})");
+        }
+    }
+}
+
 // ── Compiler ────────────────────────────────────────────────────────────
 
 /// Compile a ByteFn's opcodes into native code. Returns None if any

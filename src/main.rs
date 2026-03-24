@@ -106,6 +106,7 @@ fn main() -> Result<(), ()> {
     }
 
     if args.aot {
+        jit::scan_all_opcodes(cx);
         jit::aot_compile_all(cx);
     }
 
