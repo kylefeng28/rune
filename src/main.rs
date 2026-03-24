@@ -62,6 +62,8 @@ struct Args {
     dump: bool,
     #[arg(long, value_name = "FILE")]
     load_dump: Option<String>,
+    #[arg(long)]
+    bytecode: bool,
 }
 
 fn main() -> Result<(), ()> {
@@ -93,6 +95,10 @@ fn main() -> Result<(), ()> {
         eprintln!("Load complete");
     } else if !args.no_bootstrap {
         bootstrap(env, cx)?;
+    }
+
+    if args.bytecode {
+        byte_compile_all(cx, env);
     }
 
     if args.dump {
@@ -211,6 +217,44 @@ fn eval_stdin(cx: &mut Context, env: &mut Rt<Env>) -> Result<(), ()> {
 fn bootstrap(env: &mut Rt<Env>, cx: &mut Context) -> Result<(), ()> {
     buffer::get_buffer_create(cx.add("*scratch*"), Some(NIL), cx).unwrap();
     load("bootstrap.el", cx, env)
+}
+
+/// Byte-compile all interpreted (Cons-backed) functions in the symbol table.
+fn byte_compile_all(cx: &mut Context, env: &mut Rt<Env>) {
+    use crate::core::env::INTERNED_SYMBOLS;
+    use crate::core::object::FunctionType;
+
+    // Collect names of symbols with Cons-backed functions
+    let names: Vec<String> = {
+        let map = INTERNED_SYMBOLS.lock().unwrap();
+        map.iter()
+            .filter_map(|(name, sym)| {
+                let func = sym.follow_indirect(cx)?;
+                matches!(func.untag(), FunctionType::Cons(_)).then(|| name.to_owned())
+            })
+            .collect()
+    };
+
+    eprintln!("Byte-compiling {} interpreted functions...", names.len());
+    let mut compiled = 0usize;
+    let mut failed = 0usize;
+
+    for name in &names {
+        let form_str = format!("(byte-compile '{name})");
+        let Ok((obj, _)) = reader::read(&form_str, cx) else {
+            failed += 1;
+            continue;
+        };
+        root!(obj, cx);
+        match interpreter::eval(obj, None, env, cx) {
+            Ok(_) => compiled += 1,
+            Err(e) => {
+                eprintln!("  failed to byte-compile {name}: {e}");
+                failed += 1;
+            }
+        }
+    }
+    eprintln!("Byte-compilation complete: {compiled} compiled, {failed} failed");
 }
 
 #[test]
