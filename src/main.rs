@@ -279,6 +279,14 @@ fn byte_compile_all(cx: &mut Context, env: &mut Rt<Env>) {
         {
             continue;
         }
+        // Skip defsubst (inline) functions — they have byte-optimizer property
+        {
+            let sym = intern(name, cx);
+            let prop = intern("byte-optimizer", cx);
+            if data::get(sym, prop, env, cx) != NIL {
+                continue;
+            }
+        }
         let form_str = format!("(condition-case err (byte-compile '{name}) (error nil))");
         let Ok((obj, _)) = reader::read(&form_str, cx) else {
             failed += 1;
