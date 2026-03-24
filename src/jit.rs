@@ -323,6 +323,7 @@ pub fn compile(codes: &[u8]) -> Option<JitFn> {
 
             // ── Anything else: bail ─────────────────────────
             _ => {
+                eprintln!("    unsupported opcode: {op:?} (0x{:02x})", op as u8);
                 if !block_filled {
                     let zero = b.ins().iconst(types::I64, 0);
                     b.ins().return_(&[zero]);
