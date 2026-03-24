@@ -915,15 +915,34 @@ pub(crate) fn call<'ob>(
     cx: &'ob mut Context,
 ) -> EvalResult<'ob> {
     frame.stack.set_depth(func.bind(cx).depth);
-    let func = func.bind(cx);
+    let func_ref = func.bind(cx);
+
+    // If JIT-compiled code is available, call it directly
+    if let Some(jit_fn) = func_ref.jit_code {
+        let vm = VM {
+            pc: ProgramCounter::new(func_ref.codes()),
+            func: Slot::new(func_ref),
+            env: frame,
+            handlers: Vec::new(),
+        };
+        root!(vm, cx);
+        vm.prepare_lisp_args(func_ref, arg_cnt, name, cx)?;
+        let consts_ptr = func_ref.consts().as_ptr() as *const u8;
+        let env_ptr = &mut *vm.env as *mut Rt<Env> as *mut u8;
+        let cx_ptr = &*cx as *const Context as *mut u8;
+        let result_bits = unsafe { jit_fn(env_ptr, cx_ptr, consts_ptr) };
+        let result: Object<'ob> = unsafe { std::mem::transmute(result_bits) };
+        return Ok(result);
+    }
+
     let vm = VM {
-        pc: ProgramCounter::new(func.codes()),
-        func: Slot::new(func),
+        pc: ProgramCounter::new(func_ref.codes()),
+        func: Slot::new(func_ref),
         env: frame,
         handlers: Vec::new(),
     };
     root!(vm, cx);
-    vm.prepare_lisp_args(func, arg_cnt, name, cx)?;
+    vm.prepare_lisp_args(func_ref, arg_cnt, name, cx)?;
     vm.run(cx).map_err(|e| e.add_trace(name, vm.env.stack.current_args()))
 }
 

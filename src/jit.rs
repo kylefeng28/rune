@@ -24,7 +24,7 @@ pub type JitFn = unsafe fn(*mut u8, *mut u8, *const u8) -> u64;
 // ── Helper functions called from JIT code ───────────────────────────────
 // Each is extern "C" so Cranelift can call them directly.
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn jit_constant(env: *mut u8, _cx: *mut u8, consts: *const u8, idx: u64) -> u64 {
     unsafe {
         let env = &mut *(env as *mut crate::core::gc::Rt<crate::core::env::Env>);
@@ -34,7 +34,7 @@ pub extern "C" fn jit_constant(env: *mut u8, _cx: *mut u8, consts: *const u8, id
     0
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn jit_stack_ref(env: *mut u8, cx: *mut u8, idx: u64) -> u64 {
     unsafe {
         let env = &mut *(env as *mut crate::core::gc::Rt<crate::core::env::Env>);
@@ -44,7 +44,7 @@ pub extern "C" fn jit_stack_ref(env: *mut u8, cx: *mut u8, idx: u64) -> u64 {
     0
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn jit_stack_set(env: *mut u8, _cx: *mut u8, idx: u64) -> u64 {
     unsafe {
         let env = &mut *(env as *mut crate::core::gc::Rt<crate::core::env::Env>);
@@ -53,7 +53,7 @@ pub extern "C" fn jit_stack_set(env: *mut u8, _cx: *mut u8, idx: u64) -> u64 {
     0
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn jit_discard(env: *mut u8, cx: *mut u8) -> u64 {
     unsafe {
         let env = &mut *(env as *mut crate::core::gc::Rt<crate::core::env::Env>);
@@ -63,7 +63,7 @@ pub extern "C" fn jit_discard(env: *mut u8, cx: *mut u8) -> u64 {
     0
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn jit_duplicate(env: *mut u8, cx: *mut u8) -> u64 {
     unsafe {
         let env = &mut *(env as *mut crate::core::gc::Rt<crate::core::env::Env>);
@@ -75,7 +75,7 @@ pub extern "C" fn jit_duplicate(env: *mut u8, cx: *mut u8) -> u64 {
 }
 
 /// Pop top of stack and return its raw bits.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn jit_pop_return(env: *mut u8, cx: *mut u8) -> u64 {
     unsafe {
         let env = &mut *(env as *mut crate::core::gc::Rt<crate::core::env::Env>);
@@ -86,7 +86,7 @@ pub extern "C" fn jit_pop_return(env: *mut u8, cx: *mut u8) -> u64 {
 }
 
 /// Pop top of stack, return its raw bits (for branch testing), then push it back.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn jit_peek_pop(env: *mut u8, cx: *mut u8) -> u64 {
     unsafe {
         let env = &mut *(env as *mut crate::core::gc::Rt<crate::core::env::Env>);
@@ -137,7 +137,7 @@ pub fn compile(codes: &[u8]) -> Option<JitFn> {
     let mut b = FunctionBuilder::new(&mut ctx.func, &mut fb_ctx);
 
     // Import helper FuncIds into this function
-    let h = helpers.import_into(&module, &mut b);
+    let h = helpers.import_into(&mut module, &mut b);
 
     let entry = b.create_block();
     b.append_block_params_for_function_params(entry);
@@ -152,28 +152,51 @@ pub fn compile(codes: &[u8]) -> Option<JitFn> {
 
     let mut pc = 0usize;
     let mut current = entry;
+    let mut block_filled = false;
 
     while pc < codes.len() {
         // Switch to target block if this PC is a branch destination
         if let Some(&blk) = block_map.get(&pc) {
             if blk != current {
-                if !b.is_filled() {
+                if !block_filled {
                     b.ins().jump(blk, &[]);
                 }
                 b.switch_to_block(blk);
                 current = blk;
+                block_filled = false;
             }
         }
 
         let op: OpCode = match codes[pc].try_into() {
             Ok(op) => op,
-            Err(_) => { cleanup(&mut b, &mut module, &mut ctx); return None; }
+            Err(_) => { return None; }
         };
         pc += 1;
 
         match op {
             // ── Constants ───────────────────────────────────
-            op @ OpCode::Constant0 ..= OpCode::Constant63 => {
+            OpCode::Constant0 | OpCode::Constant1 | OpCode::Constant2
+            | OpCode::Constant3 | OpCode::Constant4 | OpCode::Constant5
+            | OpCode::Constant6 | OpCode::Constant7 | OpCode::Constant8
+            | OpCode::Constant9 | OpCode::Constant10 | OpCode::Constant11
+            | OpCode::Constant12 | OpCode::Constant13 | OpCode::Constant14
+            | OpCode::Constant15 | OpCode::Constant16 | OpCode::Constant17
+            | OpCode::Constant18 | OpCode::Constant19 | OpCode::Constant20
+            | OpCode::Constant21 | OpCode::Constant22 | OpCode::Constant23
+            | OpCode::Constant24 | OpCode::Constant25 | OpCode::Constant26
+            | OpCode::Constant27 | OpCode::Constant28 | OpCode::Constant29
+            | OpCode::Constant30 | OpCode::Constant31 | OpCode::Constant32
+            | OpCode::Constant33 | OpCode::Constant34 | OpCode::Constant35
+            | OpCode::Constant36 | OpCode::Constant37 | OpCode::Constant38
+            | OpCode::Constant39 | OpCode::Constant40 | OpCode::Constant41
+            | OpCode::Constant42 | OpCode::Constant43 | OpCode::Constant44
+            | OpCode::Constant45 | OpCode::Constant46 | OpCode::Constant47
+            | OpCode::Constant48 | OpCode::Constant49 | OpCode::Constant50
+            | OpCode::Constant51 | OpCode::Constant52 | OpCode::Constant53
+            | OpCode::Constant54 | OpCode::Constant55 | OpCode::Constant56
+            | OpCode::Constant57 | OpCode::Constant58 | OpCode::Constant59
+            | OpCode::Constant60 | OpCode::Constant61 | OpCode::Constant62
+            | OpCode::Constant63 => {
                 let idx = (op as u8) - (OpCode::Constant0 as u8);
                 let idx_v = b.ins().iconst(types::I64, idx as i64);
                 b.ins().call(h.constant, &[env, cx_v, consts, idx_v]);
@@ -185,7 +208,8 @@ pub fn compile(codes: &[u8]) -> Option<JitFn> {
             }
 
             // ── Stack ops ───────────────────────────────────
-            op @ OpCode::StackRef0 ..= OpCode::StackRef5 => {
+            OpCode::StackRef0 | OpCode::StackRef1 | OpCode::StackRef2
+            | OpCode::StackRef3 | OpCode::StackRef4 | OpCode::StackRef5 => {
                 let idx = (op as u8) - (OpCode::StackRef0 as u8);
                 let v = b.ins().iconst(types::I64, idx as i64);
                 b.ins().call(h.stack_ref, &[env, cx_v, v]);
@@ -222,6 +246,7 @@ pub fn compile(codes: &[u8]) -> Option<JitFn> {
                 let inst = b.ins().call(h.pop_return, &[env, cx_v]);
                 let ret = b.inst_results(inst)[0];
                 b.ins().return_(&[ret]);
+                block_filled = true;
             }
 
             // ── Branches ────────────────────────────────────
@@ -229,10 +254,10 @@ pub fn compile(codes: &[u8]) -> Option<JitFn> {
                 let offset = read_u16(codes, &mut pc) as usize;
                 let target = get_or_create_block(&block_map, offset, &mut b);
                 b.ins().jump(target, &[]);
-                // Start a new unreachable block so builder doesn't complain
                 let dead = b.create_block();
                 b.switch_to_block(dead);
                 current = dead;
+                block_filled = false;
             }
             OpCode::GotoIfNil => {
                 let offset = read_u16(codes, &mut pc) as usize;
@@ -246,6 +271,7 @@ pub fn compile(codes: &[u8]) -> Option<JitFn> {
                 b.switch_to_block(fall);
                 b.seal_block(fall);
                 current = fall;
+                block_filled = false;
             }
             OpCode::GotoIfNonNil => {
                 let offset = read_u16(codes, &mut pc) as usize;
@@ -259,18 +285,25 @@ pub fn compile(codes: &[u8]) -> Option<JitFn> {
                 b.switch_to_block(fall);
                 b.seal_block(fall);
                 current = fall;
+                block_filled = false;
             }
 
             // ── Anything else: bail ─────────────────────────
             _ => {
-                cleanup(&mut b, &mut module, &mut ctx);
+                if !block_filled {
+                    let zero = b.ins().iconst(types::I64, 0);
+                    b.ins().return_(&[zero]);
+                }
+                b.seal_all_blocks();
+                b.finalize();
+                module.clear_context(&mut ctx);
                 return None;
             }
         }
     }
 
     // Implicit nil return if we fall off the end
-    if !b.is_filled() {
+    if !block_filled {
         let zero = b.ins().iconst(types::I64, 0);
         b.ins().return_(&[zero]);
     }
@@ -288,15 +321,6 @@ pub fn compile(codes: &[u8]) -> Option<JitFn> {
     let ptr = module.get_finalized_function(func_id);
     // SAFETY: we just compiled this with the correct signature
     Some(unsafe { std::mem::transmute(ptr) })
-}
-
-fn cleanup(b: &mut FunctionBuilder, _module: &mut JITModule, _ctx: &mut CraneliftContext) {
-    if !b.is_filled() {
-        let zero = b.ins().iconst(types::I64, 0);
-        b.ins().return_(&[zero]);
-    }
-    b.seal_all_blocks();
-    b.finalize();
 }
 
 // ── Bytecode reading ────────────────────────────────────────────────────
@@ -413,7 +437,7 @@ fn declare_helpers(module: &mut JITModule, ptr_ty: types::Type) -> HelperFuncIds
 }
 
 impl HelperFuncIds {
-    fn import_into(self, module: &JITModule, builder: &mut FunctionBuilder) -> HelperFuncRefs {
+    fn import_into(self, module: &mut JITModule, builder: &mut FunctionBuilder) -> HelperFuncRefs {
         HelperFuncRefs {
             constant: module.declare_func_in_func(self.constant, builder.func),
             stack_ref: module.declare_func_in_func(self.stack_ref, builder.func),
