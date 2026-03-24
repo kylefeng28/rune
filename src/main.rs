@@ -271,27 +271,21 @@ fn byte_compile_all(cx: &mut Context, env: &mut Rt<Env>) {
     let mut failed = 0usize;
 
     for name in &names {
-        // Skip functions known to trigger stack assertion bugs after dump/load
-        if name.starts_with("macroexp") {
+        // Skip functions known to cause issues during byte-compilation
+        if name.starts_with("cl-generic") || name.starts_with("cl--generic") {
             continue;
         }
-        eprint!("  {name}...");
-        let form_str = format!("(byte-compile '{name})");
+        let form_str = format!("(condition-case err (byte-compile '{name}) (error nil))");
         let Ok((obj, _)) = reader::read(&form_str, cx) else {
-            eprintln!(" skip (parse)");
             failed += 1;
             continue;
         };
         root!(obj, cx);
         match interpreter::eval(obj, None, env, cx) {
-            Ok(_) => {
-                eprintln!(" ok");
-                compiled += 1;
+            Ok(val) => {
+                if val != NIL { compiled += 1; } else { failed += 1; }
             }
-            Err(e) => {
-                eprintln!(" FAIL: {e}");
-                failed += 1;
-            }
+            Err(_) => { failed += 1; }
         }
     }
     eprintln!("Byte-compilation complete: {compiled} compiled, {failed} failed");
