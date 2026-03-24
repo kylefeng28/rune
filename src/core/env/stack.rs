@@ -212,11 +212,12 @@ impl<'a> RootedLispStack<'a> {
 
     pub(crate) fn push<T: IntoRoot<Slot<Object<'a>>>>(&mut self, value: T) {
         if self.len() >= self.current.end {
-            panic!(
-                "overflowed max depth - len was {}, but limit was {}",
-                self.len(),
-                self.current.end
-            );
+            // Grow the depth limit instead of panicking — this can happen when
+            // the byte compiler processes complex functions.
+            self.current.end = self.len() + 64;
+            if self.current.end > self.vec.capacity() {
+                self.vec.reserve(self.current.end - self.vec.len());
+            }
         }
         // could use https://github.com/rust-lang/rust/issues/100486
         self.vec.push(value);

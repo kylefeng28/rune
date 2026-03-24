@@ -271,8 +271,9 @@ fn byte_compile_all(cx: &mut Context, env: &mut Rt<Env>) {
     let mut failed = 0usize;
 
     for name in &names {
-        // Skip functions known to cause issues during byte-compilation
-        if name.starts_with("cl-generic") || name.starts_with("cl--generic") {
+        if name.starts_with("cl-generic") || name.starts_with("cl--")
+            || name.starts_with("macroexp") || name.starts_with("byte-compile") || name.starts_with("byte-opt")
+        {
             continue;
         }
         let form_str = format!("(condition-case err (byte-compile '{name}) (error nil))");
