@@ -224,13 +224,44 @@ fn byte_compile_all(cx: &mut Context, env: &mut Rt<Env>) {
     use crate::core::env::INTERNED_SYMBOLS;
     use crate::core::object::FunctionType;
 
-    // Collect names of symbols with Cons-backed functions
+    // Collect names of symbols with Cons-backed functions (skip macros and complex closures)
     let names: Vec<String> = {
         let map = INTERNED_SYMBOLS.lock().unwrap();
         map.iter()
             .filter_map(|(name, sym)| {
                 let func = sym.follow_indirect(cx)?;
-                matches!(func.untag(), FunctionType::Cons(_)).then(|| name.to_owned())
+                match func.untag() {
+                    FunctionType::Cons(cons) => {
+                        use crate::core::object::ObjectType;
+                        let car = cons.car();
+                        // Skip macros: (macro . <function>)
+                        let macro_obj: crate::core::object::Object = sym::MACRO.into();
+                        if car == macro_obj { return None; }
+                        // Only compile closures with env = `t` or `(t)` (no captures)
+                        if let ObjectType::Symbol(s) = car.untag() {
+                            if s.name() == "closure" {
+                                if let Some(cdr) = cons.cdr().cons() {
+                                    let env_obj = cdr.car();
+                                    // env = t
+                                    if env_obj == crate::core::object::TRUE {
+                                        return Some(name.to_owned());
+                                    }
+                                    // env = (t) — lexical binding, no captures
+                                    if let ObjectType::Cons(env_cons) = env_obj.untag() {
+                                        if env_cons.car() == crate::core::object::TRUE
+                                            && env_cons.cdr() == NIL
+                                        {
+                                            return Some(name.to_owned());
+                                        }
+                                    }
+                                    return None;
+                                }
+                            }
+                        }
+                        Some(name.to_owned())
+                    }
+                    _ => None,
+                }
             })
             .collect()
     };
@@ -240,16 +271,25 @@ fn byte_compile_all(cx: &mut Context, env: &mut Rt<Env>) {
     let mut failed = 0usize;
 
     for name in &names {
+        // Skip functions known to trigger stack assertion bugs after dump/load
+        if name.starts_with("macroexp") {
+            continue;
+        }
+        eprint!("  {name}...");
         let form_str = format!("(byte-compile '{name})");
         let Ok((obj, _)) = reader::read(&form_str, cx) else {
+            eprintln!(" skip (parse)");
             failed += 1;
             continue;
         };
         root!(obj, cx);
         match interpreter::eval(obj, None, env, cx) {
-            Ok(_) => compiled += 1,
+            Ok(_) => {
+                eprintln!(" ok");
+                compiled += 1;
+            }
             Err(e) => {
-                eprintln!("  failed to byte-compile {name}: {e}");
+                eprintln!(" FAIL: {e}");
                 failed += 1;
             }
         }
