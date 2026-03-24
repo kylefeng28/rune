@@ -781,8 +781,9 @@ impl<'ob> RootedVM<'_, '_, '_> {
                 op::ConcatN => todo!("ConcatN bytecode"),
                 op::InsertN => todo!("InsertN bytecode"),
                 op::Switch => {
-                    let ObjectType::HashTable(table) = self.env.stack.pop(cx).untag() else {
-                        unreachable!("switch table was not a hash table")
+                    let top = self.env.stack.pop(cx);
+                    let ObjectType::HashTable(table) = top.untag() else {
+                        unreachable!("switch table was not a hash table, got: {top:?}")
                     };
                     let cond = self.env.stack.pop(cx);
                     if let Some(offset) = table.get(cond) {
